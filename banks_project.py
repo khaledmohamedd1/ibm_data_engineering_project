@@ -1,5 +1,3 @@
-# Code for ETL operations on bank market capitalization data
-
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
@@ -9,24 +7,32 @@ import sqlite3
 
 
 def log_progress(message):
-    timestamp_format = '%Y-%b-%d-%H:%M:%S'
-    now = datetime.now()
-    timestamp = now.strftime(timestamp_format)
-    with open('code_log.txt', 'a') as f:
+    timestamp = datetime.now().strftime('%Y-%b-%d-%H:%M:%S')
+    with open('code_log.txt', 'a', encoding='utf-8') as f:
         f.write(timestamp + ',' + message + '\n')
 
 
-def extract(url, table_attribs):
+def extract(url, table_attribs=None):
+    if table_attribs is None:
+        table_attribs = ['Name', 'Market cap (US$ billion)']
+
     response = requests.get(url, timeout=60)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, 'html.parser')
 
     heading = soup.find(id='By_market_capitalization')
+    if heading is None:
+        raise ValueError('Market capitalization heading not found')
+
     table = heading.find_next('table')
+    if table is None:
+        raise ValueError('Market capitalization table not found')
+
     data = []
 
     for row in table.find_all('tr'):
         cells = row.find_all('td')
+
         if len(cells) >= 3:
             name = cells[1].get_text(strip=True)
             market_cap = cells[2].get_text()
@@ -42,6 +48,8 @@ def extract(url, table_attribs):
         columns={'Market cap (US$ billion)': 'MC_USD_Billion'},
         inplace=True
     )
+
+    log_progress('Data extraction complete')
     return df
 
 
@@ -62,11 +70,14 @@ def transform(df, csv_path):
     df['MC_INR_Billion'] = [
         np.round(x * inr_rate, 2) for x in df['MC_USD_Billion']
     ]
+
+    log_progress('Data transformation complete')
     return df
 
 
 def load_to_csv(df, output_path):
     df.to_csv(output_path, index=False)
+    log_progress(f'Data saved to CSV: {output_path}')
 
 
 def load_to_db(df, sql_connection, table_name):
@@ -76,54 +87,50 @@ def load_to_db(df, sql_connection, table_name):
         if_exists='replace',
         index=False
     )
+    log_progress(f'Data loaded to database table: {table_name}')
 
 
-def run_queries(query_statement, sql_connection):
+def run_query(query_statement, sql_connection):
     print('\nQuery:', query_statement)
     query_output = pd.read_sql_query(query_statement, sql_connection)
     print(query_output.to_string(index=False))
+    log_progress(f'Query executed: {query_statement}')
 
 
-url = (
-    'https://web.archive.org/web/20230908091635/'
-    'https://en.wikipedia.org/wiki/List_of_largest_banks'
-)
-table_attribs = ['Name', 'Market cap (US$ billion)']
-output_path = '/home/project/Largest_banks_data.csv'
-
-log_progress('Extraction started')
-df = extract(url, table_attribs)
-# print(df)
-log_progress('Data extraction complete')
-
-df = transform(df, 'exchange_rate.csv')
-# print(df.to_string(index=False))
-# print(df['MC_EUR_Billion'][4])
-log_progress('Data transformation complete')
-
-load_to_csv(df, output_path)
-log_progress('Data saved to CSV file')
-
-sql_connection = sqlite3.connect('/home/project/Banks.db')
-log_progress('Database connection initiated')
-
-try:
-    load_to_db(df, sql_connection, 'Largest_banks')
-    log_progress('Data loaded to database as Largest_banks table')
-
-    run_queries('SELECT * FROM Largest_banks', sql_connection)
-
-    run_queries(
-        'SELECT AVG(MC_GBP_Billion) FROM Largest_banks',
-        sql_connection
+if __name__ == '__main__':
+    url = (
+        'https://web.archive.org/web/20230908091635/'
+        'https://en.wikipedia.org/wiki/List_of_largest_banks'
     )
+    table_attribs = ['Name', 'Market cap (US$ billion)']
 
-    run_queries(
-        'SELECT Name FROM Largest_banks LIMIT 5',
-        sql_connection
-    )
+    log_progress('ETL process started')
 
-    log_progress('Database queries completed')
-finally:
-    sql_connection.close()
-    log_progress('Database connection closed')
+    df = extract(url, table_attribs)
+    df = transform(df, 'exchange_rate.csv')
+
+    load_to_csv(df, 'Largest_banks_data.csv')
+
+    sql_connection = sqlite3.connect('Banks.db')
+    log_progress('Database connection initiated')
+
+    try:
+        load_to_db(df, sql_connection, 'Largest_banks')
+
+        run_query(
+            'SELECT * FROM Largest_banks',
+            sql_connection
+        )
+        run_query(
+            'SELECT AVG(MC_GBP_Billion) FROM Largest_banks',
+            sql_connection
+        )
+        run_query(
+            'SELECT Name FROM Largest_banks LIMIT 5',
+            sql_connection
+        )
+    finally:
+        sql_connection.close()
+        log_progress('Database connection closed')
+
+    log_progress('ETL process complete')
